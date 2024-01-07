@@ -24,8 +24,8 @@ class Program
             mode: FileMode.Open,
             access: FileAccess.Read,
             share: FileShare.ReadWrite,
-            bufferSize: 1,
-            options: FileOptions.RandomAccess | FileOptions.Asynchronous
+            options: FileOptions.RandomAccess,
+            bufferSize: 1
         );
 
         var processor = new Processor(
@@ -37,8 +37,9 @@ class Program
 
         Debug.Assert(fileStream.Length == chunks.Sum(chunk => chunk.Size), "File length does not match sum of chunk lengths.");
 
-        processor.ReadChunk(chunks[0]);
-        // Parallel.ForEach(chunks, chunk => processor.ReadChunk(chunk));
+        // processor.ReadChunk(chunks[0]);
+        Parallel.ForEach(chunks, chunk => processor.ReadChunk(chunk));
+        processor.i.Dump();
 
     }
 }
@@ -109,44 +110,65 @@ class Processor(FileStream fileStream, int processorCount = 1)
     /// <param name="chunk">The chunk to read.</param>
     public void ReadChunk(Chunk chunk)
     {
-        var pageSize = GetPageSize();
+        var pageSize = GetPageSize() / _processorCount;
         var buffer = ArrayPool<byte>.Shared.Rent(pageSize);
 
         try
         {
-            var bytesRead = 0;
-            while (bytesRead < chunk.Size)
+            using (var mmf = MemoryMappedFile.CreateFromFile(_fileStream.SafeFileHandle, null, 0, MemoryMappedFileAccess.Read, HandleInheritability.None, true))
             {
-                var bufferIndex = 0;
-                var lastNewlineIndex = -1;
-
-                // Read a full page at a time
-                var bytesToRead = Math.Min(pageSize, chunk.Size - bytesRead);
-                var bytesActuallyRead = _fileStream.Read(buffer, 0, (int)bytesToRead);
-                bytesRead += bytesActuallyRead;
-
-                // Process each byte in the buffer
-                for (bufferIndex = 0; bufferIndex < bytesActuallyRead; bufferIndex++)
+                using (var viewStream = mmf.CreateViewStream(chunk.Position, chunk.Size, MemoryMappedFileAccess.Read))
                 {
-                    var byteRead = buffer[bufferIndex];
-
-                    // If the byte is '\n', remember the position
-                    if (byteRead == '\n')
+                    var bytesRead = 0;
+                    while (bytesRead < chunk.Size)
                     {
-                        lastNewlineIndex = bufferIndex;
+                        var bufferIndex = 0;
+                        var lastNewlineIndex = -1;
+
+                        // Read a full page at a time
+                        var bytesToRead = Math.Min(pageSize, chunk.Size - bytesRead);
+                        viewStream.Position = bytesRead;
+                        viewStream.Read(buffer, 0, (int)bytesToRead);
+                        bytesRead += (int)bytesToRead;
+
+                        // Process each byte in the buffer
+                        for (bufferIndex = 0; bufferIndex < bytesToRead - 4; bufferIndex += 4)
+                        {
+                            var byteRead1 = buffer[bufferIndex];
+                            var byteRead2 = buffer[bufferIndex + 1];
+                            var byteRead3 = buffer[bufferIndex + 2];
+                            var byteRead4 = buffer[bufferIndex + 3];
+
+                            // If the byte is '\n', remember the position
+                            if (byteRead1 == '\n') lastNewlineIndex = bufferIndex;
+                            if (byteRead2 == '\n') lastNewlineIndex = bufferIndex + 1;
+                            if (byteRead3 == '\n') lastNewlineIndex = bufferIndex + 2;
+                            if (byteRead4 == '\n') lastNewlineIndex = bufferIndex + 3;
+                        }
+
+                        // Process remaining bytes
+                        for (; bufferIndex < bytesToRead; bufferIndex++)
+                        {
+                            var byteRead = buffer[bufferIndex];
+
+                            // If the byte is '\n', remember the position
+                            if (byteRead == '\n')
+                            {
+                                lastNewlineIndex = bufferIndex;
+                            }
+                        }
+
+                        // If the end of the segment doesn't end with a '\n', move the file stream back
+                        if (lastNewlineIndex != bufferIndex - 1)
+                        {
+                            bytesRead -= (bufferIndex - lastNewlineIndex);
+                            bufferIndex = lastNewlineIndex;
+                        }
+
+                        // Process the buffer here
+                        ProcessBuffer(new Span<byte>(buffer, 0, bufferIndex));
                     }
                 }
-
-                // If the end of the segment doesn't end with a '\n', move the file stream back
-                if (lastNewlineIndex != bufferIndex - 1)
-                {
-                    _fileStream.Position -= (bufferIndex - lastNewlineIndex);
-                    bytesRead -= (bufferIndex - lastNewlineIndex);
-                    bufferIndex = lastNewlineIndex;
-                }
-
-                // Process the buffer here
-                ProcessBuffer(new Span<byte>(buffer, 0, bufferIndex));
             }
         }
         finally
@@ -155,11 +177,22 @@ class Processor(FileStream fileStream, int processorCount = 1)
         }
     }
 
+    public int i = 0;
     public void ProcessBuffer(Span<byte> buffer)
     {
-        // // // buffer to utf8 string
-        // var utf8String = Encoding.UTF8.GetString(buffer);
-        // utf8String.Dump();
+        // Convert the buffer to a string
+        var bufferString = Encoding.UTF8.GetString(buffer);
+
+        // Split the buffer string into lines
+        var lines = bufferString.Split('\n');
+
+        // Process each line
+        foreach (var line in lines)
+        {
+            if (line.Length == 0) continue;
+
+            Interlocked.Increment(ref i);
+        }
     }
 
     [DllImport("libc.so.6")]
