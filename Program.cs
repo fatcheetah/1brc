@@ -132,22 +132,7 @@ class Processor(FileStream fileStream, int processorCount = 1)
                         bytesRead += (int)bytesToRead;
 
                         // Process each byte in the buffer
-                        for (bufferIndex = 0; bufferIndex < bytesToRead - 4; bufferIndex += 4)
-                        {
-                            var byteRead1 = buffer[bufferIndex];
-                            var byteRead2 = buffer[bufferIndex + 1];
-                            var byteRead3 = buffer[bufferIndex + 2];
-                            var byteRead4 = buffer[bufferIndex + 3];
-
-                            // If the byte is '\n', remember the position
-                            if (byteRead1 == '\n') lastNewlineIndex = bufferIndex;
-                            if (byteRead2 == '\n') lastNewlineIndex = bufferIndex + 1;
-                            if (byteRead3 == '\n') lastNewlineIndex = bufferIndex + 2;
-                            if (byteRead4 == '\n') lastNewlineIndex = bufferIndex + 3;
-                        }
-
-                        // Process remaining bytes
-                        for (; bufferIndex < bytesToRead; bufferIndex++)
+                        for (bufferIndex = 0; bufferIndex < bytesToRead; bufferIndex++)
                         {
                             var byteRead = buffer[bufferIndex];
 
