@@ -2,9 +2,8 @@ using System.Text;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
-using System.Collections.Concurrent;
 using System.Buffers;
-using System.Buffers.Text;
+using System.Collections.Concurrent;
 
 /// <summary>
 /// Represents the main entry point of the program.
@@ -39,8 +38,10 @@ class Program
 
         // processor.ReadChunk(chunks[0]);
         Parallel.ForEach(chunks, chunk => processor.ReadChunk(chunk));
-        processor.i.Dump();
-
+        foreach (var stationName in processor.stationNames)
+        {
+            Console.WriteLine($"{stationName.Key}");
+        }
     }
 }
 
@@ -110,49 +111,62 @@ class Processor(FileStream fileStream, int processorCount = 1)
     /// <param name="chunk">The chunk to read.</param>
     public void ReadChunk(Chunk chunk)
     {
-        var pageSize = GetPageSize() / _processorCount;
-        var buffer = ArrayPool<byte>.Shared.Rent(pageSize);
+        var bufferSize = 4096;
+        var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
 
         try
         {
-            using (var mmf = MemoryMappedFile.CreateFromFile(_fileStream.SafeFileHandle, null, 0, MemoryMappedFileAccess.Read, HandleInheritability.None, true))
+            using var mmf = MemoryMappedFile.CreateFromFile(
+                fileHandle: _fileStream.SafeFileHandle,
+                access: MemoryMappedFileAccess.Read,
+                inheritability: HandleInheritability.None,
+                mapName: null,
+                leaveOpen: true,
+                capacity: 0
+            );
+
+            using var viewStream = mmf.CreateViewStream(
+                access: MemoryMappedFileAccess.Read,
+                offset: chunk.Position,
+                size: chunk.Size
+            );
+
+            var bytesRead = 0;
+            while (bytesRead < chunk.Size)
             {
-                using (var viewStream = mmf.CreateViewStream(chunk.Position, chunk.Size, MemoryMappedFileAccess.Read))
+                var bufferIndex = 0;
+                var lastNewlineIndex = -1;
+
+                // Read a full page at a time
+                var bytesToRead = Math.Min(bufferSize, chunk.Size - bytesRead);
+                viewStream.Position = bytesRead;
+                viewStream.Read(buffer, 0, (int)bytesToRead);
+                bytesRead += (int)bytesToRead;
+
+                // Process each byte in the buffer
+                for (bufferIndex = 0; bufferIndex < bytesToRead; bufferIndex++)
                 {
-                    var bytesRead = 0;
-                    while (bytesRead < chunk.Size)
+                    var byteRead = buffer[bufferIndex];
+
+                    // If the byte is '\n', remember the position
+                    if (byteRead == '\n')
                     {
-                        var bufferIndex = 0;
-                        var lastNewlineIndex = -1;
+                        lastNewlineIndex = bufferIndex;
 
-                        // Read a full page at a time
-                        var bytesToRead = Math.Min(pageSize, chunk.Size - bytesRead);
-                        viewStream.Position = bytesRead;
-                        viewStream.Read(buffer, 0, (int)bytesToRead);
-                        bytesRead += (int)bytesToRead;
-
-                        // Process each byte in the buffer
-                        for (bufferIndex = 0; bufferIndex < bytesToRead; bufferIndex++)
+                        if (lastNewlineIndex > 0)
                         {
-                            var byteRead = buffer[bufferIndex];
-
-                            // If the byte is '\n', remember the position
-                            if (byteRead == '\n')
-                            {
-                                lastNewlineIndex = bufferIndex;
-                            }
+                            ProcessBufferLine(new Span<byte>(buffer, 0, lastNewlineIndex));
                         }
-
-                        // If the end of the segment doesn't end with a '\n', move the file stream back
-                        if (lastNewlineIndex != bufferIndex - 1)
-                        {
-                            bytesRead -= (bufferIndex - lastNewlineIndex);
-                            bufferIndex = lastNewlineIndex;
-                        }
-
-                        // Process the buffer here
-                        ProcessBuffer(new Span<byte>(buffer, 0, bufferIndex));
                     }
+                }
+
+                // If the end of the segment doesn't end with a '\n', move the file stream back
+                if (lastNewlineIndex != bufferIndex - 1)
+                {
+                    var adjustment = bufferIndex - lastNewlineIndex;
+                    bytesRead -= adjustment;
+                    viewStream.Position -= adjustment;
+                    bufferIndex = lastNewlineIndex;
                 }
             }
         }
@@ -162,34 +176,22 @@ class Processor(FileStream fileStream, int processorCount = 1)
         }
     }
 
+
+    public ConcurrentDictionary<string, byte> stationNames = new();
+
     public int i = 0;
-    public void ProcessBuffer(Span<byte> buffer)
+    public void ProcessBufferLine(Span<byte> buffer)
     {
-        // Convert the buffer to a string
-        var bufferString = Encoding.UTF8.GetString(buffer);
+        var lastNewlineIndex = buffer.LastIndexOf((byte)'\n') + 1;
+        var lastLine = buffer.Slice(lastNewlineIndex);
+        var firstSemicolonIndex = lastLine.IndexOf((byte)';');
+        var stationNameBytes = lastLine.Slice(0, firstSemicolonIndex);
 
-        // Split the buffer string into lines
-        var lines = bufferString.Split('\n');
+        stationNameBytes.ToArray().Dump();
 
-        // Process each line
-        foreach (var line in lines)
-        {
-            if (line.Length == 0) continue;
 
-            Interlocked.Increment(ref i);
-        }
-    }
+        // increment the counter
+        Interlocked.Increment(ref i);
 
-    [DllImport("libc.so.6")]
-    public static extern long sysconf(int name);
-
-    /// <summary>
-    /// Gets the system's page size.
-    /// </summary>
-    /// <returns>The page size in bytes.</returns>
-    public static int GetPageSize()
-    {
-        const int _SC_PAGESIZE = 30;
-        return (int)sysconf(_SC_PAGESIZE);
     }
 }
