@@ -51,27 +51,27 @@ class Processor
         long chunkStartPosition = 0;
         for (var chunkIndex = 0; chunkIndex < chunks.Length; chunkIndex++)
         {
+            long chunkEndPosition;
             if (chunkStartPosition + chunkSizeInBytes <= _fileStream.Length)
             {
-                var chunkEndPosition = chunkStartPosition + chunkSizeInBytes;
-                _fileStream.Seek(chunkEndPosition, SeekOrigin.Begin);
+                chunkEndPosition = chunkStartPosition + chunkSizeInBytes;
 
+                _fileStream.Seek(chunkEndPosition, SeekOrigin.Begin);
                 var _ = 0; while ((_ = _fileStream.ReadByte()) != '\n' && _ >= 0) ;
 
                 chunkEndPosition = _fileStream.Position;
-                var chunkLengthInBytes = chunkEndPosition - chunkStartPosition;
-
-                chunks[chunkIndex] = new Chunk(chunkStartPosition, chunkLengthInBytes);
-                chunkStartPosition = chunkEndPosition;
             }
             else
             {
-                chunks[chunkIndex] = new Chunk(chunkStartPosition, _fileStream.Length - chunkStartPosition);
-                break;
+                chunkEndPosition = _fileStream.Length;
             }
+
+            var chunkLengthInBytes = chunkEndPosition - chunkStartPosition;
+            chunks[chunkIndex] = new Chunk(chunkStartPosition, chunkLengthInBytes);
+            chunkStartPosition = chunkEndPosition;
         }
 
-        return chunks;
+        return chunks.Where(chunk => chunk != null).ToArray();
     }
 
 
@@ -94,7 +94,6 @@ class Processor
 
                 // Read a full page at a time
                 var bytesToRead = Math.Min(BufferSize, chunk.Size - bytesRead);
-                viewStream.Position = bytesRead;
                 viewStream.Read(buffer, 0, (int)bytesToRead);
                 bytesRead += (int)bytesToRead;
 

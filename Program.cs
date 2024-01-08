@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 class Program
 {
-    private const string FilePath = "./measurements.txt";
+    private const string FilePath = "./small-measurements.txt";
 
     public static void Main(string[] args)
     {
