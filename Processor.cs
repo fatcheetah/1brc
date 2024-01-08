@@ -71,7 +71,7 @@ class Processor
             chunkStartPosition = chunkEndPosition;
         }
 
-        return chunks.Where(chunk => chunk != null).ToArray();
+        return chunks.Where(chunk => chunk.Size > 0).ToArray();
     }
 
 
@@ -117,13 +117,11 @@ class Processor
                     }
                 }
 
-                // If the end of the segment doesn't end with a '\n', move the file stream back
+                // If the end of the segment doesn't end with a '\n', process the remaining bytes
                 if (lastNewlineIndex != bufferIndex - 1)
                 {
-                    var adjustment = bufferIndex - lastNewlineIndex;
-                    bytesRead -= adjustment;
-                    viewStream.Position -= adjustment;
-                    bufferIndex = lastNewlineIndex;
+                    var remainingBytes = new Span<byte>(buffer, lastNewlineIndex + 1, bufferIndex - lastNewlineIndex - 1);
+                    ProcessBufferLine(remainingBytes, stationStats);
                 }
             }
         }
