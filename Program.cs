@@ -1,32 +1,33 @@
 using System.Diagnostics;
 
-class Program
-{
-    private const string FilePath = "./small-measurements.txt";
+namespace _1brc;
 
-    public static void Main(string[] args)
-    {
-        var fileStream = new FileStream(
-            path: FilePath,
-            mode: FileMode.Open,
-            access: FileAccess.Read,
-            share: FileShare.ReadWrite,
-            options: FileOptions.RandomAccess,
-            bufferSize: 4096);
+public static class Program {
+  private const string FILE_PATH = "/home/jam/fun/1brc/measurements-10k-uq.txt";
 
-        var processor = new Processor(
-            fileStream: fileStream,
-            processorCount: Environment.ProcessorCount);
+  public static void Main(string[] args) {
+    var fileStream = new FileStream(
+      FILE_PATH,
+      FileMode.Open,
+      FileAccess.Read,
+      FileShare.ReadWrite,
+      options: FileOptions.RandomAccess,
+      bufferSize: 0);
 
-        var chunks = processor.DivideFileIntoChunks();
-        Debug.Assert(fileStream.Length == chunks.Sum(chunk => chunk.Size), "File length does not match sum of chunk lengths.");
+    var processor = new Processor(
+      fileStream,
+      Environment.ProcessorCount);
 
-        processor.ProcessData(chunks);
+    var chunks = processor.Chunks();
+    chunks.Dump();
 
-        foreach (var pair in processor.stationStats)
-        {
-            var mean = pair.Value.Sum / pair.Value.Count;
-            Console.WriteLine($"Station: {pair.Key}, Min: {pair.Value.Min}, Max: {pair.Value.Max}, Mean: {mean}");
-        }
+    Debug.Assert(fileStream.Length == chunks.Sum(chunk => chunk.Size),
+                 "File length does not match sum of chunk lengths.");
+
+    processor.ProcessChunks(chunks);
+    foreach (var pair in processor.StationStats.OrderBy(a => a.Key)) {
+      var mean = pair.Value.Sum / pair.Value.Count;
+      Console.WriteLine($"Station: {pair.Key}, Min: {pair.Value.Min}, Max: {pair.Value.Max}, Mean: {mean}");
     }
+  }
 }
