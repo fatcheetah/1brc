@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.IO.MemoryMappedFiles;
 using System.Text;
@@ -6,9 +7,8 @@ using System.Text;
 namespace _1brc;
 
 internal class Processor {
-  private const int BufferSize = 4096;
+  private const int BUFFER_SIZE = 1024 * 1024;
   private readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;
-  private readonly ArrayPool<char> _charPool = ArrayPool<char>.Shared;
   private readonly FileStream _fileStream;
   private readonly MemoryMappedFile _mmf;
   private readonly int _processorCount;
@@ -84,19 +84,19 @@ internal class Processor {
   }
 
   private void ReadChunk(Chunk chunk, Dictionary<string, Stats> stationStats) {
-    var bufferSize = Math.Min(BufferSize, (int)chunk.Size);
+    var bufferSize = Math.Min(BUFFER_SIZE, (int)chunk.Size);
     var buffer = _bytePool.Rent(bufferSize);
-    var offset = 0;
+    var offset = 0L;
     var remainingBytes = Memory<byte>.Empty;
 
     try {
       while (offset < chunk.Size) {
-        using var viewStream = _mmf.CreateViewStream(
-          access: MemoryMappedFileAccess.Read,
-          offset: chunk.Position + offset,
-          size: Math.Min(bufferSize, chunk.Size - offset));
+        using var viewAccessor = _mmf.CreateViewAccessor(
+          chunk.Position + offset,
+          Math.Min(bufferSize, chunk.Size - offset),
+          MemoryMappedFileAccess.Read);
 
-        var bytesRead = viewStream.Read(buffer, 0, bufferSize);
+        var bytesRead = viewAccessor.ReadArray(0, buffer, 0, bufferSize);
         var memory = new Memory<byte>(buffer, 0, bytesRead);
 
         var totalBuffer = new byte[remainingBytes.Length + memory.Length];
