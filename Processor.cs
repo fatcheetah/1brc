@@ -123,27 +123,29 @@ internal class Processor {
 
   private void ProcessBuffer(Span<byte> buffer, Dictionary<string, Stats> stationStats) {
     var bufferStart = 0;
-    for (var i = 0; i < buffer.Length; i++)
-      if (buffer[i] == (byte)'\n') {
-        var lineBuffer = buffer.Slice(bufferStart, i - bufferStart);
-        if (lineBuffer.Length > 0) ProcessBufferLine(lineBuffer, stationStats);
-        bufferStart = i + 1;
-      }
+    var newlineIndex = buffer.IndexOf((byte)'\n');
+    while (newlineIndex != -1) {
+      var lineBuffer = buffer.Slice(bufferStart, newlineIndex - bufferStart);
+      if (lineBuffer.Length > 0) ProcessBufferLine(lineBuffer, stationStats);
+      buffer = buffer.Slice(newlineIndex + 1);
+      bufferStart = 0;
+      newlineIndex = buffer.IndexOf((byte)'\n');
+    }
   }
 
   private void ProcessBufferLine(Span<byte> line, Dictionary<string, Stats> stationStats) {
     var semicolonIndex = line.IndexOf((byte)';');
-    var stationName = Encoding.UTF8.GetString(line.Slice(0, semicolonIndex));
-    var value = double.Parse(Encoding.UTF8.GetString(line.Slice(semicolonIndex + 1)));
+    var stationNameSpan = line.Slice(0, semicolonIndex);
+    var valueSpan = line.Slice(semicolonIndex + 1);
 
-    if (stationStats.ContainsKey(stationName)) {
-      var oldStats = stationStats[stationName];
-      stationStats[stationName] = new Stats {
-        Min = Math.Min(oldStats.Min, value),
-        Max = Math.Max(oldStats.Max, value),
-        Sum = oldStats.Sum + value,
-        Count = oldStats.Count + 1
-      };
+    var stationName = Encoding.UTF8.GetString(stationNameSpan);
+    if (!Utf8Parser.TryParse(valueSpan, out double value, out _)) throw new FormatException("Invalid double value.");
+
+    if (stationStats.TryGetValue(stationName, out var oldStats)) {
+      oldStats.Min = Math.Min(oldStats.Min, value);
+      oldStats.Max = Math.Max(oldStats.Max, value);
+      oldStats.Sum += value;
+      oldStats.Count += 1;
     }
     else {
       stationStats[stationName] = new Stats {
