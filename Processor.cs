@@ -45,18 +45,14 @@ internal class Processor {
     }
 
     void LocalMerge(Dictionary<string, Stats> localDict) {
-      lock (StationStats) {
-        foreach (var pair in localDict)
-          if (StationStats.TryGetValue(pair.Key, out var value))
-            StationStats[pair.Key] = new Stats {
-              Min = Math.Min(value.Min, pair.Value.Min),
-              Max = Math.Max(value.Max, pair.Value.Max),
-              Sum = value.Sum + pair.Value.Sum,
-              Count = value.Count + pair.Value.Count
-            };
-          else
-            StationStats[pair.Key] = pair.Value;
-      }
+      foreach (var (station, value) in localDict)
+        StationStats.AddOrUpdate(station, value, (_, existingValue) => {
+          existingValue.Min = Math.Min(existingValue.Min, value.Min);
+          existingValue.Max = Math.Max(existingValue.Max, value.Max);
+          existingValue.Sum += value.Sum;
+          existingValue.Count += value.Count;
+          return existingValue;
+        });
     }
   }
 
