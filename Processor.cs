@@ -71,53 +71,40 @@ internal class Processor {
   }
 
   private long GetChunkEndPosition(long chunkStartPosition, long chunkSizeInBytes) {
-    if (chunkStartPosition + chunkSizeInBytes > _fileStream.Length) return _fileStream.Length;
-
-    _fileStream.Seek(chunkStartPosition + chunkSizeInBytes, SeekOrigin.Begin);
-    while (_fileStream.ReadByte() != '\n' && _fileStream.Position < _fileStream.Length) ;
-
+    var proposedEndPosition = chunkStartPosition + chunkSizeInBytes;
+    if (proposedEndPosition > _fileStream.Length) return _fileStream.Length;
+    _fileStream.Seek(proposedEndPosition, SeekOrigin.Begin);
+    while (_fileStream.Position < _fileStream.Length && _fileStream.ReadByte() != '\n') ;
     return _fileStream.Position;
   }
 
-  private void ReadChunk(Chunk chunk, Dictionary<string, Stats> stationStats) {
-    var bufferSize = Math.Min(BUFFER_SIZE, (int)chunk.Size);
-    var buffer = _bytePool.Rent(bufferSize);
-    var offset = 0L;
-    var remainingBytes = Memory<byte>.Empty;
+  private void ReadChunk(Chunk dataChunk, Dictionary<string, Stats> stationStatistics) {
+    var optimalBufferSize = Math.Min(BUFFER_SIZE, (int)dataChunk.Size);
+    var rentedBuffer = _bytePool.Rent(optimalBufferSize);
+    var currentOffset = 0L;
+    var remainingBytes = 0;
 
     try {
-      while (offset < chunk.Size) {
-        using var viewAccessor = _mmf.CreateViewAccessor(
-          chunk.Position + offset,
-          Math.Min(bufferSize, chunk.Size - offset),
-          MemoryMappedFileAccess.Read);
+      using var memoryAccessor = _mmf.CreateViewAccessor(
+        dataChunk.Position,
+        dataChunk.Size,
+        MemoryMappedFileAccess.Read);
 
-        var bytesRead = viewAccessor.ReadArray(0, buffer, 0, bufferSize);
-        var memory = new Memory<byte>(buffer, 0, bytesRead);
-
-        var totalBuffer = new byte[remainingBytes.Length + memory.Length];
-        remainingBytes.CopyTo(totalBuffer);
-        memory.CopyTo(totalBuffer.AsMemory(remainingBytes.Length));
-
-        var lastNewline = Array.LastIndexOf(totalBuffer, (byte)'\n');
-        if (lastNewline != totalBuffer.Length - 1) {
-          remainingBytes = totalBuffer.AsMemory(lastNewline + 1);
-          totalBuffer = totalBuffer.AsSpan(0, lastNewline + 1).ToArray();
-        }
-        else {
-          remainingBytes = Memory<byte>.Empty;
-        }
-
-        ProcessBuffer(totalBuffer, stationStats);
-        offset += bytesRead;
+      while (currentOffset < dataChunk.Size) {
+        var bytesReadCount = memoryAccessor.ReadArray(currentOffset, rentedBuffer, remainingBytes, optimalBufferSize - remainingBytes);
+        var bufferToProcess = new Span<byte>(rentedBuffer, 0, bytesReadCount + remainingBytes);
+        var unprocessedData = ProcessBuffer(bufferToProcess, stationStatistics);
+        remainingBytes = unprocessedData.Length;
+        if (remainingBytes > 0) unprocessedData.CopyTo(new Span<byte>(rentedBuffer, 0, remainingBytes));
+        currentOffset += bytesReadCount;
       }
     }
     finally {
-      _bytePool.Return(buffer);
+      _bytePool.Return(rentedBuffer);
     }
   }
 
-  private void ProcessBuffer(Span<byte> buffer, Dictionary<string, Stats> stationStats) {
+  private Span<byte> ProcessBuffer(Span<byte> buffer, Dictionary<string, Stats> stationStats) {
     var bufferStart = 0;
     var newlineIndex = buffer.IndexOf((byte)'\n');
     while (newlineIndex != -1) {
@@ -127,6 +114,7 @@ internal class Processor {
       bufferStart = 0;
       newlineIndex = buffer.IndexOf((byte)'\n');
     }
+    return buffer;
   }
 
   private void ProcessBufferLine(Span<byte> line, Dictionary<string, Stats> stationStats) {
