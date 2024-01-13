@@ -49,9 +49,6 @@ public static class ExtensionMethods {
     }
 
     if (obj is string) {
-      // turn obj into a byte array
-      // var bytes = Encoding.UTF8.GetBytes((string)(object)obj);
-      // bytes.Dump(depth);
       Console.WriteLine(obj);
       return obj;
     }
@@ -61,7 +58,7 @@ public static class ExtensionMethods {
       return obj;
     }
 
-    if (obj.GetType() == typeof(DateTime)) {
+    if (obj is DateTime) {
       var date = (DateTime)(object)obj;
       Console.WriteLine(date.ToString("dd/MM/yyyy HH:mm"));
       return obj;
@@ -77,7 +74,6 @@ public static class ExtensionMethods {
       var value = p.GetIndexParameters().Length == 0
         ? p.GetValue(obj, null)
         : p.GetValue(obj, new object[] { 0 });
-
       return (value, p.PropertyType, p.Name);
     }).ToArray();
 
@@ -90,12 +86,10 @@ public static class ExtensionMethods {
 
       if (value is IEnumerable<object> collection) {
         Console.WriteLine($"{indentation}\u001b[1m{type.Name}::{name}\u001b[0m");
-
         foreach (var item in collection) item.Dump(depth + 1);
       }
       else {
         Console.Write($"{indentation}\u001b[1m{name.PadRight(longestName)}\u001b[0m: ");
-
         var isComplexType = !type.IsPrimitive
                             && !type.IsEnum
                             && type != typeof(string)
@@ -104,7 +98,6 @@ public static class ExtensionMethods {
         else value.Dump(depth + 1);
       }
     }
-
     return obj;
   }
 
