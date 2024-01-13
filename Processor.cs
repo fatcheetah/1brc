@@ -7,12 +7,13 @@ using System.Text;
 namespace _1brc;
 
 internal class Processor {
-  private const int BUFFER_SIZE = 1024 * 1024;
+  private const int BUFFER_SIZE = 4096;
   private readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;
   private readonly FileStream _fileStream;
   private readonly MemoryMappedFile _mmf;
   private readonly int _processorCount;
-  public Dictionary<string, Stats> StationStats = [];
+  private readonly UTF8Encoding _utf8 = new();
+  public readonly ConcurrentDictionary<string, Stats> StationStats = new();
 
   public Processor(FileStream fileStream, int processorCount = 1) {
     _fileStream = fileStream;
@@ -122,22 +123,23 @@ internal class Processor {
     var stationNameSpan = line.Slice(0, semicolonIndex);
     var valueSpan = line.Slice(semicolonIndex + 1);
 
-    var stationName = Encoding.UTF8.GetString(stationNameSpan);
+    var stationName = _utf8.GetString(stationNameSpan);
     if (!Utf8Parser.TryParse(valueSpan, out double value, out _)) throw new FormatException("Invalid double value.");
 
-    if (stationStats.TryGetValue(stationName, out var oldStats)) {
-      oldStats.Min = Math.Min(oldStats.Min, value);
-      oldStats.Max = Math.Max(oldStats.Max, value);
-      oldStats.Sum += value;
-      oldStats.Count += 1;
+    if (stationStats.TryGetValue(stationName, out var stats)) {
+      stats.Min = Math.Min(stats.Min, value);
+      stats.Max = Math.Max(stats.Max, value);
+      stats.Sum += value;
+      stats.Count += 1;
     }
     else {
-      stationStats[stationName] = new Stats {
+      stats = new Stats {
         Min = value,
         Max = value,
         Sum = value,
         Count = 1
       };
+      stationStats.TryAdd(stationName, stats);
     }
   }
 
