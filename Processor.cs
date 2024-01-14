@@ -28,7 +28,7 @@ internal class Processor {
   }
 
   public void ProcessChunks(IEnumerable<Chunk> chunks) {
-    var partitioner = Partitioner.Create(chunks);
+    OrderablePartitioner<Chunk> partitioner = Partitioner.Create(chunks);
     Parallel.ForEach(partitioner,
                      InitDict,
                      (chunk, loopState, loopIndex) => ReadChunkBody(InitDict(), chunk, loopState),
@@ -46,7 +46,7 @@ internal class Processor {
     }
 
     void LocalMerge(Dictionary<string, Stats> localDict) {
-      foreach (var (station, value) in localDict)
+      foreach ((string station, Stats value) in localDict)
         StationStats.AddOrUpdate(station, value, (_, existingValue) => {
           existingValue.Min = Math.Min(existingValue.Min, value.Min);
           existingValue.Max = Math.Max(existingValue.Max, value.Max);
@@ -58,12 +58,12 @@ internal class Processor {
   }
 
   public Chunk[] Chunks() {
-    var chunks = new Chunk[_processorCount];
-    var chunkSizeInBytes = _fileStream.Length / _processorCount;
+    Chunk[] chunks = new Chunk[_processorCount];
+    long chunkSizeInBytes = _fileStream.Length / _processorCount;
     long chunkStartPosition = 0;
 
-    for (var chunkIndex = 0; chunkIndex < _processorCount; chunkIndex++) {
-      var chunkEndPosition = GetChunkEndPosition(chunkStartPosition, chunkSizeInBytes);
+    for (int chunkIndex = 0; chunkIndex < _processorCount; chunkIndex++) {
+      long chunkEndPosition = GetChunkEndPosition(chunkStartPosition, chunkSizeInBytes);
       chunks[chunkIndex] = new Chunk(chunkStartPosition, chunkEndPosition - chunkStartPosition);
       chunkStartPosition = chunkEndPosition;
     }
@@ -72,7 +72,7 @@ internal class Processor {
   }
 
   private long GetChunkEndPosition(long chunkStartPosition, long chunkSizeInBytes) {
-    var proposedEndPosition = chunkStartPosition + chunkSizeInBytes;
+    long proposedEndPosition = chunkStartPosition + chunkSizeInBytes;
     if (proposedEndPosition > _fileStream.Length) return _fileStream.Length;
     _fileStream.Seek(proposedEndPosition, SeekOrigin.Begin);
     while (_fileStream.Position < _fileStream.Length && _fileStream.ReadByte() != '\n') ;
@@ -80,21 +80,21 @@ internal class Processor {
   }
 
   private void ReadChunk(Chunk dataChunk, Dictionary<string, Stats> stationStats) {
-    var optimalBufferSize = Math.Min(BUFFER_SIZE, (int)dataChunk.Size);
-    var rentedBuffer = _bytePool.Rent(optimalBufferSize);
-    var currentOffset = 0L;
-    var remainingBytes = 0;
+    int optimalBufferSize = Math.Min(BUFFER_SIZE, (int)dataChunk.Size);
+    byte[] rentedBuffer = _bytePool.Rent(optimalBufferSize);
+    long currentOffset = 0L;
+    int remainingBytes = 0;
 
     try {
-      using var memoryAccessor = _mmf.CreateViewAccessor(
+      using MemoryMappedViewAccessor memoryAccessor = _mmf.CreateViewAccessor(
         dataChunk.Position,
         dataChunk.Size,
         MemoryMappedFileAccess.Read);
 
       while (currentOffset < dataChunk.Size) {
-        var bytesReadCount = memoryAccessor.ReadArray(currentOffset, rentedBuffer, remainingBytes, optimalBufferSize - remainingBytes);
-        var bufferToProcess = new Span<byte>(rentedBuffer, 0, bytesReadCount + remainingBytes);
-        var unprocessedData = ProcessBuffer(bufferToProcess, stationStats);
+        int bytesReadCount = memoryAccessor.ReadArray(currentOffset, rentedBuffer, remainingBytes, optimalBufferSize - remainingBytes);
+        Span<byte> bufferToProcess = new(rentedBuffer, 0, bytesReadCount + remainingBytes);
+        Span<byte> unprocessedData = ProcessBuffer(bufferToProcess, stationStats);
         remainingBytes = unprocessedData.Length;
         if (remainingBytes > 0) unprocessedData.CopyTo(new Span<byte>(rentedBuffer, 0, remainingBytes));
         currentOffset += bytesReadCount;
@@ -106,10 +106,10 @@ internal class Processor {
   }
 
   private Span<byte> ProcessBuffer(Span<byte> buffer, Dictionary<string, Stats> stationStats) {
-    var bufferStart = 0;
-    var newlineIndex = buffer.IndexOf((byte)'\n');
+    int bufferStart = 0;
+    int newlineIndex = buffer.IndexOf((byte)'\n');
     while (newlineIndex != -1) {
-      var lineBuffer = buffer.Slice(bufferStart, newlineIndex - bufferStart);
+      Span<byte> lineBuffer = buffer.Slice(bufferStart, newlineIndex - bufferStart);
       if (lineBuffer.Length > 0) ProcessBufferLine(lineBuffer, stationStats);
       buffer = buffer.Slice(newlineIndex + 1);
       bufferStart = 0;
@@ -119,14 +119,14 @@ internal class Processor {
   }
 
   private void ProcessBufferLine(Span<byte> line, Dictionary<string, Stats> stationStats) {
-    var semicolonIndex = line.IndexOf((byte)';');
-    var stationNameSpan = line.Slice(0, semicolonIndex);
-    var valueSpan = line.Slice(semicolonIndex + 1);
+    int semicolonIndex = line.IndexOf((byte)';');
+    Span<byte> stationNameSpan = line.Slice(0, semicolonIndex);
+    Span<byte> valueSpan = line.Slice(semicolonIndex + 1);
 
-    var stationName = _utf8.GetString(stationNameSpan);
+    string stationName = _utf8.GetString(stationNameSpan);
     if (!Utf8Parser.TryParse(valueSpan, out double value, out _)) throw new FormatException("Invalid double value.");
 
-    if (stationStats.TryGetValue(stationName, out var stats)) {
+    if (stationStats.TryGetValue(stationName, out Stats stats)) {
       stats.Min = Math.Min(stats.Min, value);
       stats.Max = Math.Max(stats.Max, value);
       stats.Sum += value;
