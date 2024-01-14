@@ -79,7 +79,7 @@ internal class Processor {
     return _fileStream.Position;
   }
 
-  private void ReadChunk(Chunk dataChunk, Dictionary<string, Stats> stationStatistics) {
+  private void ReadChunk(Chunk dataChunk, Dictionary<string, Stats> stationStats) {
     var optimalBufferSize = Math.Min(BUFFER_SIZE, (int)dataChunk.Size);
     var rentedBuffer = _bytePool.Rent(optimalBufferSize);
     var currentOffset = 0L;
@@ -94,7 +94,7 @@ internal class Processor {
       while (currentOffset < dataChunk.Size) {
         var bytesReadCount = memoryAccessor.ReadArray(currentOffset, rentedBuffer, remainingBytes, optimalBufferSize - remainingBytes);
         var bufferToProcess = new Span<byte>(rentedBuffer, 0, bytesReadCount + remainingBytes);
-        var unprocessedData = ProcessBuffer(bufferToProcess, stationStatistics);
+        var unprocessedData = ProcessBuffer(bufferToProcess, stationStats);
         remainingBytes = unprocessedData.Length;
         if (remainingBytes > 0) unprocessedData.CopyTo(new Span<byte>(rentedBuffer, 0, remainingBytes));
         currentOffset += bytesReadCount;
@@ -155,4 +155,3 @@ internal class Processor {
     public long Count;
   }
 }
-

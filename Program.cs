@@ -3,7 +3,6 @@ using System.Diagnostics;
 namespace _1brc;
 
 public static class Program {
-
   public static void Main(string[] args) {
     var filePath = args[0];
     var fileStream = new FileStream(
@@ -30,4 +29,3 @@ public static class Program {
     }
   }
 }
-
