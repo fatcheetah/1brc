@@ -3,11 +3,11 @@ using System.Diagnostics;
 namespace _1brc;
 
 public static class Program {
-  private const string FILE_PATH = "/home/jam/fun/1brc/measurements-10k-uq.txt";
 
   public static void Main(string[] args) {
+    var filePath = args[0];
     var fileStream = new FileStream(
-      FILE_PATH,
+      filePath,
       FileMode.Open,
       FileAccess.Read,
       FileShare.ReadWrite,
@@ -19,7 +19,6 @@ public static class Program {
       Environment.ProcessorCount);
 
     var chunks = processor.Chunks();
-    chunks.Dump();
 
     Debug.Assert(fileStream.Length == chunks.Sum(chunk => chunk.Size),
                  "File length does not match sum of chunk lengths.");
@@ -31,3 +30,4 @@ public static class Program {
     }
   }
 }
+
