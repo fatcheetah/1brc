@@ -8,45 +8,41 @@ namespace _1brc;
 
 internal class Processor {
   private const int BUFFER_SIZE = 4096;
+  private const int CHUNK_SIZE = 256 * 1024 * 1024;
   private readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;
   private readonly FileStream _fileStream;
   private readonly MemoryMappedFile _mmf;
-  private readonly int _processorCount;
-  private readonly UTF8Encoding _utf8 = new();
-  public readonly ConcurrentDictionary<string, Stats> StationStats = new();
 
-  public Processor(FileStream fileStream, int processorCount = 1) {
+  public Processor(FileStream fileStream) {
     _fileStream = fileStream;
-    _processorCount = processorCount;
     _mmf = MemoryMappedFile.CreateFromFile(
       _fileStream.SafeFileHandle,
       access: MemoryMappedFileAccess.Read,
       inheritability: HandleInheritability.None,
       mapName: null,
       leaveOpen: true,
-      capacity: 0);
+      capacity: fileStream.Length);
   }
 
-  public void ProcessChunks(IEnumerable<Chunk> chunks) {
-    OrderablePartitioner<Chunk> partitioner = Partitioner.Create(chunks);
+  public readonly ConcurrentDictionary<ByteArray, Stats> StationStats = new();
+
+  public void ProcessChunks(Chunk[] chunks) {
+    OrderablePartitioner<Chunk> partitioner = Partitioner.Create(chunks, true);
     Parallel.ForEach(partitioner,
                      InitDict,
-                     (chunk, loopState, loopIndex) => ReadChunkBody(InitDict(), chunk, loopState),
+                     ReadChunkBody,
                      LocalMerge);
-    return;
 
-    Dictionary<string, Stats> InitDict() {
-      return new Dictionary<string, Stats>();
-    }
+    Dictionary<ByteArray, Stats> InitDict() => new();
 
-    Dictionary<string, Stats> ReadChunkBody(Dictionary<string, Stats> localDict, Chunk chunk,
-                                            ParallelLoopState loopState) {
+    Dictionary<ByteArray, Stats> ReadChunkBody(Chunk chunk, ParallelLoopState loopState, long index,
+                                               Dictionary<ByteArray, Stats> localDict) {
       ReadChunk(chunk, localDict);
       return localDict;
     }
 
-    void LocalMerge(Dictionary<string, Stats> localDict) {
-      foreach ((string station, Stats value) in localDict)
+    void LocalMerge(Dictionary<ByteArray, Stats> localDict) {
+      foreach ((ByteArray station, Stats value) in localDict)
         StationStats.AddOrUpdate(station, value, (_, existingValue) => {
           existingValue.Min = Math.Min(existingValue.Min, value.Min);
           existingValue.Max = Math.Max(existingValue.Max, value.Max);
@@ -55,20 +51,21 @@ internal class Processor {
           return existingValue;
         });
     }
+
+    _mmf.Dispose();
   }
 
   public Chunk[] Chunks() {
-    Chunk[] chunks = new Chunk[_processorCount];
-    long chunkSizeInBytes = _fileStream.Length / _processorCount;
+    int chunkCount = (int)Math.Ceiling((double)_fileStream.Length / CHUNK_SIZE);
+    Chunk[] chunks = new Chunk[chunkCount];
     long chunkStartPosition = 0;
-
-    for (int chunkIndex = 0; chunkIndex < _processorCount; chunkIndex++) {
-      long chunkEndPosition = GetChunkEndPosition(chunkStartPosition, chunkSizeInBytes);
+    for (int chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+      long chunkEndPosition = GetChunkEndPosition(chunkStartPosition, CHUNK_SIZE);
       chunks[chunkIndex] = new Chunk(chunkStartPosition, chunkEndPosition - chunkStartPosition);
       chunkStartPosition = chunkEndPosition;
     }
 
-    return chunks.Where(chunk => chunk.Size > 0).ToArray();
+    return chunks.ToArray();
   }
 
   private long GetChunkEndPosition(long chunkStartPosition, long chunkSizeInBytes) {
@@ -79,25 +76,19 @@ internal class Processor {
     return _fileStream.Position;
   }
 
-  private void ReadChunk(Chunk dataChunk, Dictionary<string, Stats> stationStats) {
+  private void ReadChunk(Chunk dataChunk, Dictionary<ByteArray, Stats> stationStats) {
     int optimalBufferSize = Math.Min(BUFFER_SIZE, (int)dataChunk.Size);
     byte[] rentedBuffer = _bytePool.Rent(optimalBufferSize);
     long currentOffset = 0L;
-    int remainingBytes = 0;
 
     try {
-      using MemoryMappedViewAccessor memoryAccessor = _mmf.CreateViewAccessor(
-        dataChunk.Position,
-        dataChunk.Size,
-        MemoryMappedFileAccess.Read);
-
+      using MemoryMappedViewStream stream = _mmf.CreateViewStream(dataChunk.Position, dataChunk.Size, MemoryMappedFileAccess.Read);
       while (currentOffset < dataChunk.Size) {
-        int bytesReadCount = memoryAccessor.ReadArray(currentOffset, rentedBuffer, remainingBytes, optimalBufferSize - remainingBytes);
-        Span<byte> bufferToProcess = new(rentedBuffer, 0, bytesReadCount + remainingBytes);
-        Span<byte> unprocessedData = ProcessBuffer(bufferToProcess, stationStats);
-        remainingBytes = unprocessedData.Length;
-        if (remainingBytes > 0) unprocessedData.CopyTo(new Span<byte>(rentedBuffer, 0, remainingBytes));
-        currentOffset += bytesReadCount;
+        int bytesReadCount = stream.Read(rentedBuffer, 0, optimalBufferSize);
+        Span<byte> bufferToProcess = new(rentedBuffer, 0, bytesReadCount);
+        int unprocessedDataCount = ProcessBuffer(bufferToProcess, stationStats);
+        if (unprocessedDataCount > 0) stream.Position -= unprocessedDataCount;
+        currentOffset += bytesReadCount - unprocessedDataCount;
       }
     }
     finally {
@@ -105,28 +96,26 @@ internal class Processor {
     }
   }
 
-  private Span<byte> ProcessBuffer(Span<byte> buffer, Dictionary<string, Stats> stationStats) {
-    int bufferStart = 0;
-    int newlineIndex = buffer.IndexOf((byte)'\n');
-    while (newlineIndex != -1) {
-      Span<byte> lineBuffer = buffer.Slice(bufferStart, newlineIndex - bufferStart);
-      if (lineBuffer.Length > 0) ProcessBufferLine(lineBuffer, stationStats);
-      buffer = buffer.Slice(newlineIndex + 1);
-      bufferStart = 0;
-      newlineIndex = buffer.IndexOf((byte)'\n');
+  private static int ProcessBuffer(Span<byte> buffer, Dictionary<ByteArray, Stats> stationStats) {
+    int newlineIndex;
+    Span<byte> remainingBuffer = buffer;
+    while ((newlineIndex = remainingBuffer.IndexOf((byte)'\n')) != -1) {
+      Span<byte> lineBuffer = remainingBuffer.Slice(0, newlineIndex);
+      ProcessBufferLine(lineBuffer, stationStats);
+      remainingBuffer = remainingBuffer.Slice(newlineIndex + 1);
     }
-    return buffer;
+    return remainingBuffer.Length;
   }
 
-  private void ProcessBufferLine(Span<byte> line, Dictionary<string, Stats> stationStats) {
+  private static void ProcessBufferLine(Span<byte> line, Dictionary<ByteArray, Stats> stationStats) {
     int semicolonIndex = line.IndexOf((byte)';');
     Span<byte> stationNameSpan = line.Slice(0, semicolonIndex);
     Span<byte> valueSpan = line.Slice(semicolonIndex + 1);
 
-    string stationName = _utf8.GetString(stationNameSpan);
+    ByteArray stationName = new(stationNameSpan.ToArray());
     if (!Utf8Parser.TryParse(valueSpan, out double value, out _)) throw new FormatException("Invalid double value.");
 
-    if (stationStats.TryGetValue(stationName, out Stats stats)) {
+    if (stationStats.TryGetValue(stationName, out Stats? stats)) {
       stats.Min = Math.Min(stats.Min, value);
       stats.Max = Math.Max(stats.Max, value);
       stats.Sum += value;
@@ -148,10 +137,57 @@ internal class Processor {
     public long Size { get; } = length;
   }
 
-  public struct Stats {
+  public class Stats {
     public double Min;
     public double Max;
     public double Sum;
     public long Count;
+  }
+
+  public readonly struct ByteArray(byte[] data) : IComparable<ByteArray> {
+    private readonly byte[] _data = data;
+
+    public override bool Equals(object? obj) {
+      if (obj is not ByteArray other) return false;
+
+      int diff = 0;
+      for (int i = 0; i < _data.Length; i++) {
+        diff |= _data[i] ^ other._data[i];
+        if (diff != 0)
+          break;
+      }
+
+      return diff == 0;
+    }
+
+    public override int GetHashCode() {
+      unchecked {
+        const int prime = 16777619;
+        int hash = (int)2166136261;
+
+        int i = 0;
+        for (; i < _data.Length; i++) {
+          hash ^= _data[i];
+          hash *= prime;
+        }
+
+        return hash;
+      }
+    }
+
+    public string GetString() {
+      return Encoding.UTF8.GetString(_data);
+    }
+
+    public int CompareTo(ByteArray other) {
+      int minLength = Math.Min(_data.Length, other._data.Length);
+      int comparison = 0;
+      for (int i = 0; i < minLength; i++) {
+        comparison |= _data[i] - other._data[i] << i * 8;
+        if (comparison != 0)
+          break;
+      }
+      return comparison != 0 ? comparison : _data.Length.CompareTo(other._data.Length);
+    }
   }
 }
